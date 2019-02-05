@@ -24,8 +24,10 @@ import (
 	"regexp"
 	"testing"
 
+	buildapi "github.com/knative/build/pkg/apis/build/v1alpha1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/test-infra/prow/kube"
+
+	coreapi "k8s.io/api/core/v1"
 )
 
 var c *Config
@@ -544,7 +546,8 @@ func TestMergePreset(t *testing.T) {
 	tcs := []struct {
 		name      string
 		jobLabels map[string]string
-		pod       *kube.PodSpec
+		pod       *coreapi.PodSpec
+		buildSpec *buildapi.BuildSpec
 		presets   []Preset
 
 		shouldError  bool
@@ -555,11 +558,12 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "one volume",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{},
+			pod:       &coreapi.PodSpec{},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels:  map[string]string{"foo": "bar"},
-					Volumes: []kube.Volume{{Name: "baz"}},
+					Volumes: []coreapi.Volume{{Name: "baz"}},
 				},
 			},
 			numVol: 1,
@@ -567,22 +571,35 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "wrong label",
 			jobLabels: map[string]string{"foo": "nope"},
-			pod:       &kube.PodSpec{},
+			pod:       &coreapi.PodSpec{},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels:  map[string]string{"foo": "bar"},
-					Volumes: []kube.Volume{{Name: "baz"}},
+					Volumes: []coreapi.Volume{{Name: "baz"}},
 				},
 			},
 		},
 		{
-			name:      "conflicting volume name",
+			name:      "conflicting volume name for podspec",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Volumes: []kube.Volume{{Name: "baz"}}},
+			pod:       &coreapi.PodSpec{Volumes: []coreapi.Volume{{Name: "baz"}}},
 			presets: []Preset{
 				{
 					Labels:  map[string]string{"foo": "bar"},
-					Volumes: []kube.Volume{{Name: "baz"}},
+					Volumes: []coreapi.Volume{{Name: "baz"}},
+				},
+			},
+			shouldError: true,
+		},
+		{
+			name:      "conflicting volume name for buildspec",
+			jobLabels: map[string]string{"foo": "bar"},
+			buildSpec: &buildapi.BuildSpec{Volumes: []coreapi.Volume{{Name: "baz"}}},
+			presets: []Preset{
+				{
+					Labels:  map[string]string{"foo": "bar"},
+					Volumes: []coreapi.Volume{{Name: "baz"}},
 				},
 			},
 			shouldError: true,
@@ -590,11 +607,12 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "non conflicting volume name",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Volumes: []kube.Volume{{Name: "baz"}}},
+			pod:       &coreapi.PodSpec{Volumes: []coreapi.Volume{{Name: "baz"}}},
+			buildSpec: &buildapi.BuildSpec{Volumes: []coreapi.Volume{{Name: "baz"}}},
 			presets: []Preset{
 				{
 					Labels:  map[string]string{"foo": "bar"},
-					Volumes: []kube.Volume{{Name: "qux"}},
+					Volumes: []coreapi.Volume{{Name: "qux"}},
 				},
 			},
 			numVol: 2,
@@ -602,11 +620,12 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "one env",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Containers: []kube.Container{{}}},
+			pod:       &coreapi.PodSpec{Containers: []coreapi.Container{{}}},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels: map[string]string{"foo": "bar"},
-					Env:    []kube.EnvVar{{Name: "baz"}},
+					Env:    []coreapi.EnvVar{{Name: "baz"}},
 				},
 			},
 			numEnv: 1,
@@ -614,11 +633,12 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "one vm",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Containers: []kube.Container{{}}},
+			pod:       &coreapi.PodSpec{Containers: []coreapi.Container{{}}},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels:       map[string]string{"foo": "bar"},
-					VolumeMounts: []kube.VolumeMount{{Name: "baz"}},
+					VolumeMounts: []coreapi.VolumeMount{{Name: "baz"}},
 				},
 			},
 			numVolMounts: 1,
@@ -626,13 +646,14 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "one of each",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Containers: []kube.Container{{}}},
+			pod:       &coreapi.PodSpec{Containers: []coreapi.Container{{}}},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels:       map[string]string{"foo": "bar"},
-					Env:          []kube.EnvVar{{Name: "baz"}},
-					VolumeMounts: []kube.VolumeMount{{Name: "baz"}},
-					Volumes:      []kube.Volume{{Name: "qux"}},
+					Env:          []coreapi.EnvVar{{Name: "baz"}},
+					VolumeMounts: []coreapi.VolumeMount{{Name: "baz"}},
+					Volumes:      []coreapi.Volume{{Name: "qux"}},
 				},
 			},
 			numEnv:       1,
@@ -642,36 +663,50 @@ func TestMergePreset(t *testing.T) {
 		{
 			name:      "two vm",
 			jobLabels: map[string]string{"foo": "bar"},
-			pod:       &kube.PodSpec{Containers: []kube.Container{{}}},
+			pod:       &coreapi.PodSpec{Containers: []coreapi.Container{{}}},
+			buildSpec: &buildapi.BuildSpec{},
 			presets: []Preset{
 				{
 					Labels:       map[string]string{"foo": "bar"},
-					VolumeMounts: []kube.VolumeMount{{Name: "baz"}, {Name: "foo"}},
+					VolumeMounts: []coreapi.VolumeMount{{Name: "baz"}, {Name: "foo"}},
 				},
 			},
 			numVolMounts: 2,
 		},
 	}
 	for _, tc := range tcs {
-		if err := resolvePresets("foo", tc.jobLabels, tc.pod, tc.presets); err == nil && tc.shouldError {
-			t.Errorf("For test \"%s\": expected error but got none.", tc.name)
-		} else if err != nil && !tc.shouldError {
-			t.Errorf("For test \"%s\": expected no error but got %v.", tc.name, err)
-		}
-		if tc.shouldError {
-			continue
-		}
-		if len(tc.pod.Volumes) != tc.numVol {
-			t.Errorf("For test \"%s\": wrong number of volumes. Got %d, expected %d.", tc.name, len(tc.pod.Volumes), tc.numVol)
-		}
-		for _, c := range tc.pod.Containers {
-			if len(c.VolumeMounts) != tc.numVolMounts {
-				t.Errorf("For test \"%s\": wrong number of volume mounts. Got %d, expected %d.", tc.name, len(c.VolumeMounts), tc.numVolMounts)
+		t.Run(tc.name, func(t *testing.T) {
+			if err := resolvePresets("foo", tc.jobLabels, tc.pod, tc.buildSpec, tc.presets); err == nil && tc.shouldError {
+				t.Errorf("expected error but got none.")
+			} else if err != nil && !tc.shouldError {
+				t.Errorf("expected no error but got %v.", err)
 			}
-			if len(c.Env) != tc.numEnv {
-				t.Errorf("For test \"%s\": wrong number of env vars. Got %d, expected %d.", tc.name, len(c.Env), tc.numEnv)
+			if tc.shouldError {
+				return
 			}
-		}
+			if len(tc.pod.Volumes) != tc.numVol {
+				t.Errorf("wrong number of volumes for podspec. Got %d, expected %d.", len(tc.pod.Volumes), tc.numVol)
+			}
+			if len(tc.buildSpec.Volumes) != tc.numVol {
+				t.Errorf("wrong number of volumes for buildspec. Got %d, expected %d.", len(tc.pod.Volumes), tc.numVol)
+			}
+			for _, c := range tc.pod.Containers {
+				if len(c.VolumeMounts) != tc.numVolMounts {
+					t.Errorf("wrong number of volume mounts for podspec. Got %d, expected %d.", len(c.VolumeMounts), tc.numVolMounts)
+				}
+				if len(c.Env) != tc.numEnv {
+					t.Errorf("wrong number of env vars for podspec. Got %d, expected %d.", len(c.Env), tc.numEnv)
+				}
+			}
+			for _, c := range tc.buildSpec.Steps {
+				if len(c.VolumeMounts) != tc.numVolMounts {
+					t.Errorf("wrong number of volume mounts for buildspec. Got %d, expected %d.", len(c.VolumeMounts), tc.numVolMounts)
+				}
+				if len(c.Env) != tc.numEnv {
+					t.Errorf("wrong number of env vars  for buildspec. Got %d, expected %d.", len(c.Env), tc.numEnv)
+				}
+			}
+		})
 	}
 }
 

@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	prowapi "k8s.io/test-infra/prow/apis/prowjobs/v1"
 	"k8s.io/test-infra/prow/github"
-	"k8s.io/test-infra/prow/kube"
 )
 
 func TestParseIssueComment(t *testing.T) {
@@ -173,13 +173,13 @@ func TestParseIssueComment(t *testing.T) {
 		},
 	}
 	for _, tc := range testcases {
-		pj := kube.ProwJob{
-			Spec: kube.ProwJobSpec{
+		pj := prowapi.ProwJob{
+			Spec: prowapi.ProwJobSpec{
 				Context: tc.context,
-				Refs:    &kube.Refs{Pulls: []kube.Pull{{}}},
+				Refs:    &prowapi.Refs{Pulls: []prowapi.Pull{{}}},
 			},
-			Status: kube.ProwJobStatus{
-				State: kube.ProwJobState(tc.state),
+			Status: prowapi.ProwJobStatus{
+				State: prowapi.ProwJobState(tc.state),
 			},
 		}
 		deletes, entries, update := parseIssueComments(pj, "k8s-ci-robot", tc.ics)
@@ -264,60 +264,70 @@ func TestReportStatus(t *testing.T) {
 	tests := []struct {
 		name string
 
-		state  kube.ProwJobState
-		report bool
-		desc   string // override default msg
-
+		state            prowapi.ProwJobState
+		report           bool
+		desc             string // override default msg
+		pjType           prowapi.ProwJobType
 		expectedStatuses []string
 		expectedDesc     string
 	}{
 		{
-			name: "Successful prowjob with report true and children should set status for itself but not its children",
+			name: "Successful prowjob with report true should set status",
 
-			state:  kube.SuccessState,
-			report: true,
-
+			state:            prowapi.SuccessState,
+			pjType:           prowapi.PresubmitJob,
+			report:           true,
 			expectedStatuses: []string{"success"},
 		},
 		{
-			name: "Successful prowjob with report false and children should not set status for itself and its children",
+			name: "Successful prowjob with report false should not set status",
 
-			state:  kube.SuccessState,
-			report: false,
-
+			state:            prowapi.SuccessState,
+			pjType:           prowapi.PresubmitJob,
+			report:           false,
 			expectedStatuses: []string{},
 		},
 		{
-			name: "Pending prowjob with report true and children should set status for itself and its children",
+			name: "Pending prowjob with report true should set status",
 
-			state:  kube.PendingState,
-			report: true,
-
+			state:            prowapi.PendingState,
+			report:           true,
+			pjType:           prowapi.PresubmitJob,
 			expectedStatuses: []string{"pending"},
 		},
 		{
-			name: "Aborted prowjob with report true should set failure status",
+			name: "Aborted presubmit job with report true should set failure status",
 
-			state:  kube.AbortedState,
-			report: true,
-
+			state:            prowapi.AbortedState,
+			report:           true,
+			pjType:           prowapi.PresubmitJob,
 			expectedStatuses: []string{"failure"},
 		},
 		{
-			name: "Triggered prowjob with report true should set pending status",
+			name: "Triggered presubmit job with report true should set pending status",
 
-			state:  kube.TriggeredState,
-			report: true,
-
+			state:            prowapi.TriggeredState,
+			report:           true,
+			pjType:           prowapi.PresubmitJob,
 			expectedStatuses: []string{"pending"},
 		},
 		{
-			name:             "really long description is truncated",
-			state:            kube.TriggeredState,
+			name: "really long description is truncated",
+
+			state:            prowapi.TriggeredState,
 			report:           true,
 			expectedStatuses: []string{"pending"},
 			desc:             shout(maxLen), // resulting string will exceed maxLen
 			expectedDesc:     truncate(shout(maxLen)),
+		},
+		{
+			name: "Successful postsubmit job with report true should set success status",
+
+			state:  prowapi.SuccessState,
+			report: true,
+			pjType: prowapi.PostsubmitJob,
+
+			expectedStatuses: []string{"success"},
 		},
 	}
 
@@ -332,21 +342,21 @@ func TestReportStatus(t *testing.T) {
 			if tc.expectedDesc == "" {
 				tc.expectedDesc = defMsg
 			}
-			pj := kube.ProwJob{
-				Status: kube.ProwJobStatus{
+			pj := prowapi.ProwJob{
+				Status: prowapi.ProwJobStatus{
 					State:       tc.state,
 					Description: tc.desc,
 					URL:         "http://mytest.com",
 				},
-				Spec: kube.ProwJobSpec{
+				Spec: prowapi.ProwJobSpec{
 					Job:     "job-name",
-					Type:    kube.PresubmitJob,
+					Type:    tc.pjType,
 					Context: "parent",
 					Report:  tc.report,
-					Refs: &kube.Refs{
+					Refs: &prowapi.Refs{
 						Org:  "k8s",
 						Repo: "test-infra",
-						Pulls: []kube.Pull{{
+						Pulls: []prowapi.Pull{{
 							Author: "me",
 							Number: 1,
 							SHA:    "abcdef",

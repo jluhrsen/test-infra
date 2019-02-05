@@ -32,20 +32,23 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	githubql "github.com/shurcooL/githubv4"
 	"github.com/sirupsen/logrus"
-
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
+
+	prowapi "k8s.io/test-infra/prow/apis/prowjobs/v1"
+	prowv1 "k8s.io/test-infra/prow/client/clientset/versioned/typed/prowjobs/v1"
 	"k8s.io/test-infra/prow/config"
 	"k8s.io/test-infra/prow/git"
 	"k8s.io/test-infra/prow/github"
-	"k8s.io/test-infra/prow/kube"
 	"k8s.io/test-infra/prow/pjutil"
 	"k8s.io/test-infra/prow/tide/blockers"
 	"k8s.io/test-infra/prow/tide/history"
 )
 
-type kubeClient interface {
-	ListProwJobs(string) ([]kube.ProwJob, error)
-	CreateProwJob(kube.ProwJob) (kube.ProwJob, error)
+type prowJobClient interface {
+	Create(*prowapi.ProwJob) (*prowapi.ProwJob, error)
+	List(opts metav1.ListOptions) (*prowapi.ProwJobList, error)
 }
 
 type githubClient interface {
@@ -66,11 +69,11 @@ type contextChecker interface {
 
 // Controller knows how to sync PRs and PJs.
 type Controller struct {
-	logger *logrus.Entry
-	config config.Getter
-	ghc    githubClient
-	kc     kubeClient
-	gc     *git.Client
+	logger        *logrus.Entry
+	config        config.Getter
+	ghc           githubClient
+	prowJobClient prowJobClient
+	gc            *git.Client
 
 	sc *statusController
 
@@ -191,7 +194,7 @@ func init() {
 }
 
 // NewController makes a Controller out of the given clients.
-func NewController(ghcSync, ghcStatus *github.Client, kc *kube.Client, cfg config.Getter, gc *git.Client, logger *logrus.Entry) *Controller {
+func NewController(ghcSync, ghcStatus *github.Client, prowJobClient prowv1.ProwJobInterface, cfg config.Getter, gc *git.Client, logger *logrus.Entry) *Controller {
 	if logger == nil {
 		logger = logrus.NewEntry(logrus.StandardLogger())
 	}
@@ -207,12 +210,12 @@ func NewController(ghcSync, ghcStatus *github.Client, kc *kube.Client, cfg confi
 	}
 	go sc.run()
 	return &Controller{
-		logger: logger.WithField("controller", "sync"),
-		ghc:    ghcSync,
-		kc:     kc,
-		config: cfg,
-		gc:     gc,
-		sc:     sc,
+		logger:        logger.WithField("controller", "sync"),
+		ghc:           ghcSync,
+		prowJobClient: prowJobClient,
+		config:        cfg,
+		gc:            gc,
+		sc:            sc,
 		changedFiles: &changedFilesAgent{
 			ghc:             ghcSync,
 			nextChangeCache: make(map[changeCacheKey][]string),
@@ -286,14 +289,15 @@ func (c *Controller) Sync() error {
 		"duration", time.Since(start).String(),
 	).Debugf("Found %d (unfiltered) pool PRs.", len(prs))
 
-	var pjs []kube.ProwJob
+	var pjs []prowapi.ProwJob
 	var blocks blockers.Blockers
 	var err error
 	if len(prs) > 0 {
-		pjs, err = c.kc.ListProwJobs(kube.EmptySelector)
+		pjList, err := c.prowJobClient.List(metav1.ListOptions{LabelSelector: labels.Everything().String()})
 		if err != nil {
 			return err
 		}
+		pjs = pjList.Items
 
 		if label := c.config().Tide.BlockerLabel; label != "" {
 			c.logger.Debugf("Searching for blocking issues (label %q).", label)
@@ -509,10 +513,10 @@ const (
 	successState simpleState = "success"
 )
 
-func toSimpleState(s kube.ProwJobState) simpleState {
-	if s == kube.TriggeredState || s == kube.PendingState {
+func toSimpleState(s prowapi.ProwJobState) simpleState {
+	if s == prowapi.TriggeredState || s == prowapi.PendingState {
 		return pendingState
-	} else if s == kube.SuccessState {
+	} else if s == prowapi.SuccessState {
 		return successState
 	}
 	return failureState
@@ -580,7 +584,7 @@ func pickSmallestPassingNumber(log *logrus.Entry, ghc githubClient, prs []PullRe
 // accumulateBatch returns a list of PRs that can be merged after passing batch
 // testing, if any exist. It also returns a list of PRs currently being batch
 // tested.
-func accumulateBatch(presubmits map[int][]config.Presubmit, prs []PullRequest, pjs []kube.ProwJob, log *logrus.Entry) ([]PullRequest, []PullRequest) {
+func accumulateBatch(presubmits map[int][]config.Presubmit, prs []PullRequest, pjs []prowapi.ProwJob, log *logrus.Entry) ([]PullRequest, []PullRequest) {
 	log.Debug("accumulating PRs for batch testing")
 	if len(presubmits) == 0 {
 		log.Debug("no presubmits configured, no batch can be triggered")
@@ -599,7 +603,7 @@ func accumulateBatch(presubmits map[int][]config.Presubmit, prs []PullRequest, p
 	}
 	states := make(map[string]*accState)
 	for _, pj := range pjs {
-		if pj.Spec.Type != kube.BatchJob {
+		if pj.Spec.Type != prowapi.BatchJob {
 			continue
 		}
 		// First validate the batch job's refs.
@@ -672,12 +676,12 @@ func accumulateBatch(presubmits map[int][]config.Presubmit, prs []PullRequest, p
 
 // accumulate returns the supplied PRs sorted into three buckets based on their
 // accumulated state across the presubmits.
-func accumulate(presubmits map[int][]config.Presubmit, prs []PullRequest, pjs []kube.ProwJob, log *logrus.Entry) (successes, pendings, nones []PullRequest) {
+func accumulate(presubmits map[int][]config.Presubmit, prs []PullRequest, pjs []prowapi.ProwJob, log *logrus.Entry) (successes, pendings, nones []PullRequest) {
 	for _, pr := range prs {
 		// Accumulate the best result for each job.
 		psStates := make(map[string]simpleState)
 		for _, pj := range pjs {
-			if pj.Spec.Type != kube.PresubmitJob {
+			if pj.Spec.Type != prowapi.PresubmitJob {
 				continue
 			}
 			if pj.Spec.Refs.Pulls[0].Number != int(pr.Number) {
@@ -889,7 +893,7 @@ func (c *Controller) mergePRs(sp subpool, prs []PullRequest) error {
 }
 
 func (c *Controller) trigger(sp subpool, presubmits map[int][]config.Presubmit, prs []PullRequest) error {
-	refs := kube.Refs{
+	refs := prowapi.Refs{
 		Org:     sp.org,
 		Repo:    sp.repo,
 		BaseRef: sp.branch,
@@ -898,7 +902,7 @@ func (c *Controller) trigger(sp subpool, presubmits map[int][]config.Presubmit, 
 	for _, pr := range prs {
 		refs.Pulls = append(
 			refs.Pulls,
-			kube.Pull{
+			prowapi.Pull{
 				Number: int(pr.Number),
 				Author: string(pr.Author.Login),
 				SHA:    string(pr.HeadRefOID),
@@ -916,14 +920,14 @@ func (c *Controller) trigger(sp subpool, presubmits map[int][]config.Presubmit, 
 				continue
 			}
 			triggeredContexts.Insert(string(ps.Context))
-			var spec kube.ProwJobSpec
+			var spec prowapi.ProwJobSpec
 			if len(prs) == 1 {
 				spec = pjutil.PresubmitSpec(ps, refs)
 			} else {
 				spec = pjutil.BatchSpec(ps, refs)
 			}
 			pj := pjutil.NewProwJob(spec, ps.Labels)
-			if _, err := c.kc.CreateProwJob(pj); err != nil {
+			if _, err := c.prowJobClient.Create(&pj); err != nil {
 				return fmt.Errorf("failed to create a ProwJob for job: %q, PRs: %v: %v", spec.Job, prNumbers(prs), err)
 			}
 		}
@@ -1165,7 +1169,7 @@ type subpool struct {
 	branch string
 	sha    string
 
-	pjs []kube.ProwJob
+	pjs []prowapi.ProwJob
 	prs []PullRequest
 
 	cc         contextChecker
@@ -1178,7 +1182,7 @@ func poolKey(org, repo, branch string) string {
 
 // dividePool splits up the list of pull requests and prow jobs into a group
 // per repo and branch. It only keeps ProwJobs that match the latest branch.
-func (c *Controller) dividePool(pool map[string]PullRequest, pjs []kube.ProwJob) (map[string]*subpool, error) {
+func (c *Controller) dividePool(pool map[string]PullRequest, pjs []prowapi.ProwJob) (map[string]*subpool, error) {
 	sps := make(map[string]*subpool)
 	for _, pr := range pool {
 		org := string(pr.Repository.Owner.Login)
@@ -1207,7 +1211,7 @@ func (c *Controller) dividePool(pool map[string]PullRequest, pjs []kube.ProwJob)
 		sps[fn].prs = append(sps[fn].prs, pr)
 	}
 	for _, pj := range pjs {
-		if pj.Spec.Type != kube.PresubmitJob && pj.Spec.Type != kube.BatchJob {
+		if pj.Spec.Type != prowapi.PresubmitJob && pj.Spec.Type != prowapi.BatchJob {
 			continue
 		}
 		fn := poolKey(pj.Spec.Refs.Org, pj.Spec.Refs.Repo, pj.Spec.Refs.BaseRef)

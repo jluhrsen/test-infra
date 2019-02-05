@@ -14,6 +14,7 @@ presubmits:
     decorate: true
     decoration_config:
       timeout: 4200000000000 # 70m
+    path_alias: k8s.io/kubernetes
     extra_refs:
     - org: kubernetes
       repo: release
@@ -31,7 +32,9 @@ presubmits:
       preset-pull-kubernetes-e2e: "true"
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-master
+      # TODO(krzyzacy): use stable tag after debugging
+      - image: gcr.io/k8s-testimages/kubekins-e2e:latest-master
+        imagePullPolicy: Always
         command:
         - runner.sh
         - /workspace/scenarios/kubernetes_e2e.py
@@ -78,7 +81,7 @@ presubmits:
       path_alias: k8s.io/kubernetes-anywhere
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-1.13
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-1.13
         command:
         - runner.sh
         - /workspace/scenarios/kubernetes_e2e.py
@@ -125,7 +128,7 @@ presubmits:
       path_alias: k8s.io/kubernetes-anywhere
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-1.12
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-1.12
         command:
         - runner.sh
         - /workspace/scenarios/kubernetes_e2e.py
@@ -172,7 +175,7 @@ presubmits:
       path_alias: k8s.io/kubernetes-anywhere
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-1.11
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-1.11
         command:
         - runner.sh
         - /workspace/scenarios/kubernetes_e2e.py
@@ -219,7 +222,7 @@ presubmits:
       path_alias: k8s.io/kubernetes-anywhere
     spec:
       containers:
-      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-1.10
+      - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-1.10
         command:
         - runner.sh
         - /workspace/scenarios/kubernetes_e2e.py
@@ -248,7 +251,7 @@ periodics:
     preset-k8s-ssh: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-master
       args:
       - --repo=k8s.io/kubernetes=release-1.11
       - --repo=k8s.io/kubernetes-anywhere=kubeadm-e2e
@@ -275,7 +278,7 @@ periodics:
     preset-bazel-scratch-dir: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-master
       args:
       - --repo=k8s.io/kubernetes=release-1.12
       - --repo=k8s.io/kubernetes-anywhere=kubeadm-e2e
@@ -302,7 +305,7 @@ periodics:
     preset-bazel-scratch-dir: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-master
       args:
       - --repo=k8s.io/kubernetes=release-1.13
       - --repo=k8s.io/kubernetes-anywhere=kubeadm-e2e
@@ -328,7 +331,7 @@ periodics:
     preset-k8s-ssh: "true"
   spec:
     containers:
-    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190125-3d9554697e-master
+    - image: gcr.io/k8s-testimages/kubekins-e2e:v20190201-234c5ddcf-master
       args:
       - --repo=k8s.io/kubernetes=master
       - --repo=k8s.io/kubernetes-anywhere=kubeadm-e2e
